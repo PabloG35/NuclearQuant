@@ -19,6 +19,9 @@ nuclear counterstain (Hoechst 33342) as the mask. Logic taken from the NeuN pilo
    intensity in a 3 um shell of background voxels around it (other nuclei excluded). Writes `objects_bg.tsv` with
    `<M>_shell_median`, `<M>_net` (mean - shell) and `<M>_ratio` (mean / shell). Slurm wrapper: `run_background.sbatch`.
 
+5. `nq_call_overlay.py` (QC) — draws the positive call (green) vs negative (grey) on chosen z-planes, composite and
+   marker-only, to judge a threshold by eye. Run with `PYTHONPATH=deps:.`.
+
 ### Calling positives (nq_classify.py)
 - `--min-volume-um3 X` drops small fragments first; `--show-volumes` prints the volume percentiles per image to choose X.
 - `--method fold-median --fold F`: positive when the value is above F times the median of that image's nuclei (most
