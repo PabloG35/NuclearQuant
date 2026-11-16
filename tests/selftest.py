@@ -144,4 +144,20 @@ sys.argv = ['x', '--czi', str(czi), '--result-dir', str(rd), '--marker', 'ERG', 
 nq_call_overlay.main()
 assert sorted(p.name for p in (rd / 'calls').glob('*.png')) == ['call_z03_cd31.png', 'call_z03_comp.png',
                                                                 'call_z03_marker.png']
+
+# 6. vessel length (skeleton + spanning tree, um) and the per-image summary
+import nq_summary
+tube = np.zeros((7, 40, 140), bool); tube[1:6, 17:23, 10:110] = True               # 100 voxels long along x
+L, nsk = nq_summary.vessel_length_um(tube, (1.0, 0.5, 0.5))
+assert 40 < L < 55, L                                                              # ~ 99 steps x 0.5 um
+Lz, _ = nq_summary.vessel_length_um(np.transpose(tube, (2, 1, 0)), (1.0, 0.5, 0.5))  # same tube along z: 1.0 um steps
+assert 90 < Lz < 105, Lz
+assert nq_summary.vessel_length_um(np.zeros((3, 5, 5), bool), (1, 1, 1))[0] == 0.
+par['voxel_um'] = sc; (rd / 'parameters.json').write_text(json.dumps(par))
+r = subprocess.run([sys.executable, str(here / 'nq_summary.py'), '--marker', 'ERG', '--threshold', '2', '--gate-max', '5',
+                    '--result-dirs', str(rd), '--out', str(fx / 'summ')], capture_output=True, text=True)
+assert r.returncode == 0, r.stderr
+sm = list(csv.DictReader((fx / 'summ.tsv').open(), delimiter='\t'))[0]
+assert sm['n_pos'] == '1' and sm['n_nuclei'] == '3' and float(sm['vessel_len_mm']) > 0 and float(sm['pos_per_mm_vessel']) > 0
+assert (rd / 'vessel_length.json').exists()
 print('selftest OK')

@@ -24,7 +24,10 @@ nuclear counterstain (Hoechst 33342) as the mask. Logic taken from the NeuN pilo
    mask for thin elongated nuclei) and, with `--cd31 488`, the distance to the nearest CD31 vessel (`CD31_dist_um`) from
    an automatic vessel mask (`cd31_mask.tif`, check it by eye). Writes `objects_feat.tsv`. Slurm: `run_features.sbatch`.
    Then `nq_classify.py --column ERG_p75_ratio --method fixed --threshold F --gate-column CD31_dist_um --gate-max D`.
-6. `nq_call_overlay.py` (QC) — draws the positive call (green) vs negative (grey) on chosen z-planes (composite, marker-only and, with
+6. `nq_summary.py` — one row per image: positives, the strength of the positives (median ratio among them, i.e. a change
+   of level rather than of number), the image's own background, vessel length (3D skeleton of `cd31_mask.tif`) and
+   positives per mm of vessel / per mm^3. Slurm: `run_summary.sbatch`. Vessel length is only as good as the mask.
+7. `nq_call_overlay.py` (QC) — draws the positive call (green) vs negative (grey) on chosen z-planes (composite, marker-only and, with
    `--show-cd31`, the vessel channel with the vessel mask), to judge a threshold by eye. Run with `PYTHONPATH=deps:.`.
 
 ### Calling positives (nq_classify.py)
