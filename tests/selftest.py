@@ -91,4 +91,57 @@ res = shell_background(lab, sig, (1.0, 0.5, 0.5), shell_um=2.0, gap_um=0.5)
 assert set(res) == {1, 2} and res[2][0] == 100.0                             # nucleus masks never enter a shell
 assert res[1][1] > res[2][1] and res[1][0] == 100.0 and res[1][2] > 0        # bright strip lifts the mean, not the median
 assert shell_background(np.zeros_like(lab), sig, (1, 1, 1), 2.0) == {}
+
+# 5. nq_features end to end (monkeypatched CZI reader), classifier gate, overlay with vessels
+import tifffile, nq_segment, nq_features, nq_call_overlay
+fx = pathlib.Path(tempfile.mkdtemp()); czi = fx / 'fake.czi'; czi.write_bytes(b'x' * 1000)
+rd = fx / 'results' / 'S' / 'd60'; rd.mkdir(parents=True)
+lab = np.zeros((6, 120, 120), np.uint32); lab[1:5, 56:66, 10:30] = 1; lab[1:5, 100:115, 10:30] = 2; lab[1:5, 56:66, 70:90] = 3
+erg = np.full(lab.shape, 50, np.uint16); erg[lab == 1] = 500; erg[lab == 2] = 500; erg[lab == 3] = 60
+erg[1:5, 56:66, 10:20] = 200                                      # nucleus 1: half dim, so p75 > mean
+vessel_ch = np.full(lab.shape, 30, np.uint16); vessel_ch[:, 48:53, :] = 3000
+nuc = np.where(lab > 0, 800, 20).astype(np.uint16)
+tifffile.imwrite(rd / 'nuclei_labels.tif', lab)
+chans = ['H33342', 'Alexa Fluor 647', 'Alexa Fluor 488']; raw = np.stack([nuc, erg, vessel_ch])
+sc = dict(X=.5, Y=.5, Z=1.)
+par = dict(input_sha256=nq_segment.sha256(czi), source_dtype='uint16', converted_8bit_to_16bit=False,
+           channels_in_file=chans, nuclear_channel='H33342', marker_channels={'ERG': 'Alexa Fluor 647'},
+           crop_origin_zyx=[0, 0, 0], shape_zyx=list(lab.shape))
+(rd / 'parameters.json').write_text(json.dumps(par)); (rd / 'complete.json').write_text('{}')
+means = {1: erg[lab == 1].mean(), 2: 500., 3: 60.}
+with (rd / 'objects.tsv').open('w', newline='') as f:
+    w = csv.writer(f, delimiter='\t')
+    w.writerow(['label', 'volume_um3', 'touches_xy_border', 'touches_z_border', 'ERG_mean_raw'])
+    for l in (1, 2, 3): w.writerow([l, 100, 0, 0, means[l]])
+nq_segment.read_czi = lambda path, native=False: (raw, chans, sc, {})
+sys.argv = ['x', '--czi', str(czi), '--result-dir', str(rd), '--marker', 'ERG', '--cd31', '488', '--shell-um', '3']
+nq_features.main()
+ft = {int(r['label']): r for r in csv.DictReader((rd / 'objects_feat.tsv').open(), delimiter='\t')}
+assert float(ft[1]['CD31_dist_um']) < 3 and float(ft[2]['CD31_dist_um']) > 15      # near vs far from the vessel
+assert float(ft[1]['ERG_p75_raw']) == 500.0 and float(ft[1]['ERG_p75_raw']) > float(ft[1]['ERG_mean_raw'])
+assert 0 < json.loads((rd / 'features.json').read_text())['vessels']['foreground_fraction'] < 0.2
+assert (rd / 'cd31_mask.tif').exists()
+try:
+    sys.argv = ['x', '--czi', str(czi), '--result-dir', str(rd), '--marker', 'ERG']; nq_features.main()
+    raise AssertionError('overwrite accepted')
+except SystemExit:
+    pass
+# classifier: nucleus 1 near vessel and bright, nucleus 2 bright but far, nucleus 3 dim
+fo = tmp / 'o3'
+rc = lambda *args: subprocess.run([sys.executable, str(here / 'nq_classify.py'), '--marker', 'ERG', '--out', str(fo),
+                                   '--objects', str(rd / 'objects_feat.tsv'), *args], capture_output=True, text=True)
+r = rc('--column', 'ERG_p75_ratio', '--method', 'fixed', '--threshold', '2'); assert r.returncode == 0, r.stderr
+row = list(csv.DictReader((fo / 'counts.tsv').open(), delimiter='\t'))[0]
+assert int(row['n_positive']) == 2                                                   # 1 and 2 without the gate
+r = rc('--column', 'ERG_p75_ratio', '--method', 'fixed', '--threshold', '2', '--gate-column', 'CD31_dist_um',
+       '--gate-max', '5'); assert r.returncode == 0, r.stderr
+row = list(csv.DictReader((fo / 'counts.tsv').open(), delimiter='\t'))[0]
+assert int(row['n_positive']) == 1 and int(row['n_positive_ungated']) == 2           # the far nucleus is rejected
+assert rc('--gate-column', 'CD31_dist_um').returncode != 0                           # gate needs --gate-max
+sys.argv = ['x', '--czi', str(czi), '--result-dir', str(rd), '--marker', 'ERG', '--column', 'ERG_p75_ratio',
+            '--threshold', '2', '--gate-column', 'CD31_dist_um', '--gate-max', '5', '--show-cd31', '488',
+            '--z', '3', '--max-px', '60']
+nq_call_overlay.main()
+assert sorted(p.name for p in (rd / 'calls').glob('*.png')) == ['call_z03_cd31.png', 'call_z03_comp.png',
+                                                                'call_z03_marker.png']
 print('selftest OK')

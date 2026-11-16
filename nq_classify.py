@@ -26,12 +26,13 @@ import argparse, csv, json, pathlib, os
 os.environ.setdefault('MPLBACKEND', 'Agg')
 
 
-def load(paths, col, marker):
+def load(paths, col, marker, gate_col=None):
     import numpy as np
     out = {}
     for p in map(pathlib.Path, paths):
         with p.open() as f: rows = list(csv.DictReader(f, delimiter='\t'))
         if col not in rows[0]: raise SystemExit('%s has no column %s' % (p, col))
+        if gate_col and gate_col not in rows[0]: raise SystemExit('%s has no column %s' % (p, gate_col))
         par = json.loads((p.parent / 'parameters.json').read_text()) if (p.parent / 'parameters.json').exists() else {}
         dye = par.get('marker_channels', {}).get(marker)
         out[p.parent.parent.name] = dict(
@@ -39,6 +40,8 @@ def load(paths, col, marker):
             xy=np.array([int(r['touches_xy_border']) for r in rows]),
             z=np.array([int(r['touches_z_border']) for r in rows]),
             vol=np.array([float(r['volume_um3']) if 'volume_um3' in r else np.nan for r in rows]),
+            g=np.array([float(r[gate_col]) if r.get(gate_col, '') != '' else np.nan for r in rows]) if gate_col
+            else np.full(len(rows), np.nan),
             dtype=par.get('source_dtype', 'unknown'),
             acq=par.get('acquisition_by_dye', {}).get(dye) if dye else None)
     return out
@@ -71,6 +74,9 @@ def main():
                     help='drop objects smaller than this (um^3) before thresholds and counts (default: keep all)')
     ap.add_argument('--show-volumes', action='store_true',
                     help='print volume_um3 percentiles per image (to choose --min-volume-um3) and exit')
+    ap.add_argument('--gate-column', help='extra requirement, e.g. CD31_dist_um: only nuclei with gate value <= '
+                                          '--gate-max can be positive (empty value = fails the gate)')
+    ap.add_argument('--gate-max', type=float, help='largest allowed value of --gate-column')
     ap.add_argument('--column', help='value column (default <marker>_mean_raw)')
     ap.add_argument('--control', nargs='*', default=[], help='objects.tsv of negative-control images')
     ap.add_argument('--percentile', type=float, default=99.5)
@@ -79,12 +85,14 @@ def main():
     ap.add_argument('--out', type=pathlib.Path, required=True)
     a = ap.parse_args()
     col = a.column or '%s_mean_raw' % a.marker
-    data = load(a.objects, col, a.marker)
+    if bool(a.gate_column) != (a.gate_max is not None):
+        raise SystemExit('--gate-column and --gate-max go together')
+    data = load(a.objects, col, a.marker, a.gate_column)
     no_value = {}
     for s_, d in data.items():
         ok = ~np.isnan(d['v']); no_value[s_] = int((~ok).sum())
         if not ok.all():
-            for k in ('v', 'xy', 'z', 'vol'): d[k] = d[k][ok]
+            for k in ('v', 'xy', 'z', 'vol', 'g'): d[k] = d[k][ok]
     if a.show_volumes:
         qs = [1, 2, 5, 10, 25, 50, 75, 95]
         print('volume_um3 percentiles  ' + '  '.join('p%d' % q for q in qs) + '   n_objects')
@@ -97,7 +105,7 @@ def main():
             if np.isnan(d['vol']).any(): raise SystemExit('%s: no volume_um3 column, cannot filter by volume' % s_)
             keep = d['vol'] >= a.min_volume_um3
             dropped[s_] = int((~keep).sum())
-            for k in ('v', 'xy', 'z', 'vol'): d[k] = d[k][keep]
+            for k in ('v', 'xy', 'z', 'vol', 'g'): d[k] = d[k][keep]
             if not len(d['v']): raise SystemExit('%s: every object is below --min-volume-um3' % s_)
     if a.method in ('otsu', 'otsu-per-image', 'control') and any((d['v'] < 0).any() for d in data.values()):
         raise SystemExit('Some values are negative (background-subtracted column?): log-based methods cannot be used; '
@@ -132,8 +140,10 @@ def main():
     rows = []
     for s, d in data.items():
         pos = d['v'] > thr[s]; inner = (d['xy'] == 0) & (d['z'] == 0)
+        n_ungated = int(pos.sum())
+        if a.gate_column: pos = pos & (d['g'] <= a.gate_max)
         rows.append(dict(sample=s, marker=a.marker, source_dtype=d['dtype'], threshold=thr[s],
-                         image_median=float(np.median(d['v'])), n_dropped_small=dropped.get(s, 0), n_dropped_no_value=no_value.get(s, 0),
+                         image_median=float(np.median(d['v'])), n_dropped_small=dropped.get(s, 0), n_dropped_no_value=no_value.get(s, 0), n_positive_ungated=n_ungated,
                          n_nuclei=len(pos),
                          n_positive=int(pos.sum()), fraction_positive=float(pos.mean()),
                          n_nuclei_interior=int(inner.sum()), n_positive_interior=int((pos & inner).sum())))
@@ -145,9 +155,10 @@ def main():
             w = csv.writer(f, delimiter='\t'); w.writerow(['sample', 'n_nuclei'] + ['fold_%g' % x for x in folds])
             for s, d in data.items():
                 m = float(np.median(d['v']))
-                w.writerow([s, len(d['v'])] + [int((d['v'] > x * m).sum()) for x in folds])
+                w.writerow([s, len(d['v'])] + [int(((d['v'] > x * m) & ((d['g'] <= a.gate_max) if a.gate_column else True)).sum()) for x in folds])
     (a.out / 'method.json').write_text(json.dumps(dict(
         marker=a.marker, method=a.method, threshold_by_sample=thr, fold=a.fold, column=col,
+        gate_column=a.gate_column, gate_max=a.gate_max,
         min_volume_um3=a.min_volume_um3, n_dropped_small=dropped,
         percentile=a.percentile if a.method == 'control' else None,
         comparability_warnings=problems, allow_mixed=a.allow_mixed, n_pooled_nuclei=int(len(pooled)),
