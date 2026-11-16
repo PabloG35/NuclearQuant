@@ -14,7 +14,17 @@ nuclear counterstain (Hoechst 33342) as the mask. Logic taken from the NeuN pilo
 2. `nq_classify.py` — per marker, positive/negative call and counts per image (`counts.tsv`, `method.json`,
    `QC_distribution.png`). Methods: `otsu` (pooled log1p, as in NeuN; exploratory), `control` (percentile of a
    negative-control image), `fixed`.
-3. `run.sbatch` — Slurm wrapper for step 1 (6 CPUs, 96 GB, no time limit, as the NeuN runs).
+3. `run.sbatch` — Slurm wrapper for step 1 (6 CPUs, 45 GB, no time limit).
+4. `nq_background.py` (optional, after step 1, no re-segmentation) — local background: for every nucleus, the median marker
+   intensity in a 3 um shell of background voxels around it (other nuclei excluded). Writes `objects_bg.tsv` with
+   `<M>_shell_median`, `<M>_net` (mean - shell) and `<M>_ratio` (mean / shell). Slurm wrapper: `run_background.sbatch`.
+
+### Calling positives (nq_classify.py)
+- `--min-volume-um3 X` drops small fragments first; `--show-volumes` prints the volume percentiles per image to choose X.
+- `--method fold-median --fold F`: positive when the value is above F times the median of that image's nuclei (most
+  nuclei are negative, so the median is the image's own background). Scale-free, so it can be compared across images
+  with different background or bit depth. `--sweep` writes `sweep.tsv` with the counts for several folds.
+- `--column ERG_ratio --method fixed --threshold F` uses the local-background fold from `nq_background.py`.
 
 ## Bit depth and comparability (fail-safe)
 - Every stack is put on the 16-bit scale: 8-bit data are multiplied by 257 (exact round trip). `parameters.json`
@@ -43,4 +53,6 @@ Python env: `~/conda/envs/image_analysis`; the CZI reader lives in `deps/`.
   Otsu is unreliable: prefer a negative-control image (`--method control`).
 - 60 px (12.4 µm at 0.207 µm/px) was tuned on cortical neuron nuclei; endothelial nuclei (ERG, Sox17) are smaller
   and elongated: check overlays before trusting counts. Compare images only at the same resolution.
-- Nothing here has been run yet on a new marker.
+- Pooled or per-image Otsu on the raw mean is sensitive to the image's background level: in the S0041 ERG set the
+  background mode of the nuclei differed ~2x between images, which moved the call for most nuclei in the brightest
+  image. Prefer `fold-median` or the local-background columns, and check overlays before trusting counts.
