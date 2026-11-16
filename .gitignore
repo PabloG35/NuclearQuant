@@ -1,0 +1,9 @@
+00_raw/
+results/
+results_native8/
+logs/
+deps/
+__pycache__/
+*.czi
+*.tif
+*.png
